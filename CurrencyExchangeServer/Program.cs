@@ -16,13 +16,18 @@ namespace CurrencyExchangeServer
         private static UdpClient? udpServer;
         private static int serverPort = 8888;
         private static string logFilePath = "server_log.txt";
+        private static string? exchangeFilePath = null;
+        private static DateTime lastFileWriteTime = DateTime.MinValue;
 
         static async Task Main(string[] args)
         {
             Console.WriteLine("Currency Exchange Server");
             Console.WriteLine("========================");
             
-            // Load exchange rates
+            // Find exchange.txt file path
+            FindExchangeFilePath();
+            
+            // Load exchange rates initially
             LoadExchangeRates();
             
             // Start UDP server
@@ -44,37 +49,60 @@ namespace CurrencyExchangeServer
             }
         }
 
+        static void FindExchangeFilePath()
+        {
+            // Try multiple possible locations for exchange.txt
+            string[] possiblePaths = new[]
+            {
+                Path.Combine("..", "..", "..", "..", "exchange.txt"), // From bin/Debug/net8.0-windows
+                Path.Combine("..", "..", "..", "exchange.txt"),       // From bin/Debug
+                Path.Combine("..", "..", "exchange.txt"),             // From bin
+                Path.Combine("..", "exchange.txt"),                   // From CurrencyExchangeServer
+                "exchange.txt"                                        // Current directory
+            };
+            
+            foreach (var path in possiblePaths)
+            {
+                if (File.Exists(path))
+                {
+                    exchangeFilePath = path;
+                    Console.WriteLine($"Found exchange.txt at: {Path.GetFullPath(path)}");
+                    return;
+                }
+            }
+            
+            Console.WriteLine("WARNING: exchange.txt file not found! Will check on each request.");
+        }
+
         static void LoadExchangeRates()
         {
             try
             {
-                // Try multiple possible locations for exchange.txt
-                string[] possiblePaths = new[]
+                // If file path not found, try to find it again
+                if (exchangeFilePath == null || !File.Exists(exchangeFilePath))
                 {
-                    Path.Combine("..", "..", "..", "..", "exchange.txt"), // From bin/Debug/net8.0-windows
-                    Path.Combine("..", "..", "..", "exchange.txt"),       // From bin/Debug
-                    Path.Combine("..", "..", "exchange.txt"),             // From bin
-                    Path.Combine("..", "exchange.txt"),                   // From CurrencyExchangeServer
-                    "exchange.txt"                                        // Current directory
-                };
-                
-                string? filePath = null;
-                foreach (var path in possiblePaths)
-                {
-                    if (File.Exists(path))
-                    {
-                        filePath = path;
-                        break;
-                    }
+                    FindExchangeFilePath();
                 }
                 
-                if (filePath == null)
+                if (exchangeFilePath == null || !File.Exists(exchangeFilePath))
                 {
                     Console.WriteLine("ERROR: exchange.txt file not found!");
                     return;
                 }
                 
-                var lines = File.ReadAllLines(filePath);
+                // Check if file has been modified
+                DateTime currentWriteTime = File.GetLastWriteTime(exchangeFilePath);
+                if (currentWriteTime == lastFileWriteTime && exchangeRates.Count > 0)
+                {
+                    // File hasn't changed, no need to reload
+                    return;
+                }
+                
+                // File has changed or first load - reload rates
+                lastFileWriteTime = currentWriteTime;
+                exchangeRates.Clear();
+                
+                var lines = File.ReadAllLines(exchangeFilePath);
                 
                 // Skip header line
                 for (int i = 1; i < lines.Length; i++)
@@ -94,9 +122,9 @@ namespace CurrencyExchangeServer
                 // Use the most recent rate (last line)
                 if (exchangeRates.Count > 0)
                 {
-                    Console.WriteLine($"Loaded exchange rates:");
+                    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Reloaded exchange rates from file:");
                     Console.WriteLine($"  USD to EUR: {exchangeRates["USD_EUR"]}");
-                    Console.WriteLine($"  EUR to USD: {exchangeRates["EUR_USD"]}\n");
+                    Console.WriteLine($"  EUR to USD: {exchangeRates["EUR_USD"]}");
                 }
             }
             catch (Exception ex)
@@ -143,6 +171,9 @@ namespace CurrencyExchangeServer
                         LogDisconnection(clientKey);
                         continue;
                     }
+                    
+                    // Reload exchange rates before processing request to get latest data
+                    LoadExchangeRates();
                     
                     string response = ProcessRequest(request);
                     
